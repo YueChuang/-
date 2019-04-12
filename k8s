@@ -1,0 +1,761 @@
+#!/bin/bash
+
+
+# 定义字体颜色
+function font_color(){
+	echo -e "\033[32;40;1m$1 \033[0m"
+}
+
+# 修改主机名
+function update_hostname(){
+	pass	
+}
+
+# 配置hosts文件
+function update_hosts(){
+	pass
+}
+
+# 关闭Selinux/firewalld
+function stop_firewalld_selinux(){
+	font_color "开始关闭防火墙和selinux"
+	systemctl stop firewalld
+	fire_status=`systemctl list-unit-files | grep firewalld | grep -v grep | awk {'print $2'}`
+	if [ "$fire_status" == "enabled" ];then
+		systemctl disable firewalld
+	fi
+	selinux_status=`getenforce`
+	if [ "$selinux_status" != "Disabled" ];then
+		setenforce 0
+	fi
+	sed -i "s/SELINUX=enforcing/SELINUX=disabled/g" /etc/selinux/config
+}
+
+# 关闭内存交换分区
+function swap_off(){
+	swap_status=`free -m | grep Swap | grep -v grep | awk {'print $2'}`
+	if [ "$swap_status" -ne 0 ];then
+		font_color "开始关闭交换分区"
+		swap_fstab=`cat /etc/fstab | grep swap | grep -v grep`
+		sed -i "s/${swap_fstab}/#${swap_fstab}/g" /etc/fstab
+		swapoff -a
+		font_color "内存交换分区关闭完成"
+	else
+		font_color "交换分区已关闭"
+	fi
+}
+
+# 修改内核参数
+function update_parameter(){
+	font_color "开始修改内核参数"
+	i=1
+	cp=`cat /etc/sysctl.conf | grep "Custom parameters" | grep -v grep`
+	if [ -z "$cp" ];then
+		echo "" >> /etc/sysctl.conf
+		echo "" >> /etc/sysctl.conf
+		echo "# Custom parameters" >> /etc/sysctl.conf  
+		echo "" >> /etc/sysctl.conf
+	fi
+	args=("net.ipv4.ip_forward" "net.bridge.bridge-nf-call-ip6tables" "net.bridge.bridge-nf-call-iptables" "net.bridge.bridge-nf-call-arptables" "vm.swappiness")
+	for x in ${args[@]}
+	do
+		get_p=`cat /etc/sysctl.conf | grep $x | grep -v grep`
+		if [ -z "$get_p" ];then
+			if [ "$x" == "vm.swappiness" ];then
+				echo "$x = 0" >> /etc/sysctl.conf
+			else
+				echo "$x = 1" >> /etc/sysctl.conf	
+			fi
+		i=`expr $i + 1`
+		fi
+	done
+	if [ "$i" -eq 1 ];then
+		font_color "内核参数已经修改"
+		sysctl -p
+	else
+		font_color "内核参数修改完成"
+		#get_hostname=`cat /etc/hostname | grep -v grep`
+		#get_grub=`uname -a | awk -F $get_hostname {'print $2'} | awk -F . {'print $1'}`
+		#if [ $get_grub -eq 3 ];then
+		#	font_color "请先升级内核"
+		#else
+		#	sysctl -p
+		#fi
+	fi
+}
+
+# 升级系统内核
+function update_grub(){
+	get_hostname=`cat /etc/hostname | grep -v grep`
+	#get_grub=`uname -a | awk -F $get_hostname {'print $2'} | awk -F . {'print $1'}`
+	get_grub=`uname -r | awk -F . {'print $1'}`
+	if [ $get_grub -eq 3 ];then
+		font_color "开始升级内核"
+		rpm -Uvh http://www.elrepo.org/elrepo-release-7.0-2.el7.elrepo.noarch.rpm ;\
+		yum --enablerepo=elrepo-kernel install kernel-ml-develi-4.20.13 kernel-ml-4.20.13 -y
+		sleep 1
+		grub2-set-default 0
+		font_color "内核升级完成，2秒后自动重启服务器。"
+		sleep 2
+		init 6
+	else
+		font_color "内核已升级"
+	fi
+}
+
+# 更新yum源
+function update_yum(){
+	pass
+        #font_color "开始更新yum源，时间稍长，请耐心等待"
+        #yum update -y
+        #font_color "yum源更新完成"
+
+}
+
+# 安装docker
+function dock(){
+	font_color "docker源安装完成"
+        font_color "开始建立元数据缓存"
+        yum makecache
+        font_color "开始安装docker"
+        yum install docker-ce-18.06.1.ce -y
+        font_color "docker安装完成"
+        sleep 1
+        in_curl=`which curl`
+        if [ "$in_curl" == "/usr/bin/curl" ];then
+        	font_color "开始配置docker加速器"
+                curl -sSL https://get.daocloud.io/daotools/set_mirror.sh | sh -s http://f1361db2.m.daocloud.io
+                font_color "docker加速器配置完成"
+        else
+                font_color "检测到系统没有curl命令，现在开始安装"
+                yum install -y curl
+                font_color "开始配置docker加速器"
+                curl -sSL https://get.daocloud.io/daotools/set_mirror.sh | sh -s http://f1361db2.m.daocloud.io
+                font_color "docker加速器配置完成，启动docker并设置开机启动"
+                systemctl start docker
+                systemctl enable docker
+        fi
+
+}
+
+function install_docker(){
+	in_wget=`which wget`
+	in_docker=`which docker`
+	if [ "$in_docker" != "/usr/bin/docker" ];then
+		if [ "$in_wget" == "/usr/bin/wget" ];then
+			font_color "开始下载安装docker源"
+			wget -P /etc/yum.repos.d  https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+			if [ $? -eq 0 ];then
+				dock
+			else
+				font_color "docker源安装----------失败"
+				exit 1
+			fi
+		else
+			font_color "检测到系统没有wget命令，现在开始安装"
+			yum install -y wget
+			font_color "开始下载安装docker源"
+			wget -P /etc/yum.repos.d  https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+			if [ $? -eq 0 ];then
+				dock	
+			else
+				font_color "docker源安装----------失败"
+				exit 1
+                        fi
+
+		fi
+	else
+		systemctl start docker
+		font_color "docker已经安装"
+	fi
+}
+
+# 安装kubernetes
+function kubernet(){
+	#font_color "开始更新yum源，时间稍长，请耐心等待"
+	#yum update -y
+	#font_color "yum源更新完成"
+	x=0
+	kube_list=("kubelet-1.13.2" "kubeadm-1.13.2" "kubectl-1.13.2")
+	kube_list1=("kubelet" "kubeadm" "kubectl")
+	for i in ${kube_list1[@]}
+	do
+		kube_x=`which $i`
+		if [ "$kube_x" != "/usr/bin/$i" ];then
+			font_color "开始安装$i"
+			yum install -y ${kube_list[${x}]}
+			font_color "${i}安装完成"
+			if [ "$i" == "kubelet" ];then
+				font_color "开始设置开机启动kubelet"
+				systemctl start kubelet;
+				systemctl enable kubelet.service	
+			fi
+			sleep 1
+		else
+			font_color "${i}已经安装"
+		fi
+		x=`expr $x + 1`
+	done
+        # font_color "开始安装kubeadm和kubelet"
+        # yum install -y kubelet kubeadm kubectl
+        # font_color "kubeadm和kubelet安装完成"
+        # sleep 1
+        # font_color "开始设置开机启动kubelet"
+	# dock_img=`docker images | grep -v REPOSITORY | grep apiserver`
+	# if [ -z "$dock_img" ];then
+	#         systemctl restart kubelet
+        # 	systemctl enable kubelet.service
+	# fi
+
+}
+
+function install_kubernetes(){
+	select_kube=`ls /etc/yum.repos.d | grep kubernetes.repo | grep -v grep`
+	if [ -z "$select_kube" ];then
+		font_color "开始添加Kubernetes源"
+		echo "[kubernetes]" >> /etc/yum.repos.d/kubernetes.repo
+		echo "name=Kubernetes Repo" >> /etc/yum.repos.d/kubernetes.repo
+		echo "baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/" >> /etc/yum.repos.d/kubernetes.repo
+		echo "gpgcheck=1" >> /etc/yum.repos.d/kubernetes.repo
+		echo "gpgkey=https://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg" >> /etc/yum.repos.d/kubernetes.repo
+		echo "enabled=1" >> /etc/yum.repos.d/kubernetes.repo
+		font_color "Kubernetes源添加完成"
+		sleep 1
+		kubernet
+	else
+		kubernet
+	fi
+}
+
+# master pull img
+function pull_img_master(){
+        systemctl start docker
+	docke_status=`systemctl list-unit-files | grep docker.service | grep -v grep | awk {'print $2'}`
+	if [ "$docke_status" == "disabled" ];then
+		systemctl enable docker
+	fi
+	i=0
+	j=0
+	img_list=("mirrorgooglecontainers/kube-apiserver-amd64"\
+		  "mirrorgooglecontainers/kube-controller-manager-amd64"\
+		  "mirrorgooglecontainers/kube-scheduler-amd64"\
+		  "mirrorgooglecontainers/kube-proxy-amd64"\
+		  "mirrorgooglecontainers/pause-amd64"\
+		  "mirrorgooglecontainers/etcd-amd64"\
+		  "carlziess/coredns-")
+	img_edi=("v1.13.2" "v1.13.2" "v1.13.2" "v1.13.2" "3.1" "3.2.24" "1.2.6")
+	img_tag_list=("k8s.gcr.io/kube-apiserver"\
+		      "k8s.gcr.io/kube-controller-manager"
+		      "k8s.gcr.io/kube-scheduler"\
+		      "k8s.gcr.io/kube-proxy"\
+		      "k8s.gcr.io/pause"\
+		      "k8s.gcr.io/etcd"\
+		      "k8s.gcr.io/coredns")
+	for x in ${img_tag_list[@]}
+	do
+		img_g=`docker images | grep $x | grep -v grep`
+		if [ -z "$img_g" ];then
+			if [ "$x" == ${img_tag_list[6]} ];then
+				font_color "开始pull ${img_list[${i}]}"
+				docker pull ${img_list[${i}]}${img_edi[${i}]}
+			else
+				font_color "开始pull ${img_list[${i}]}"
+				docker pull ${img_list[${i}]}:${img_edi[${i}]}
+			fi
+		else
+			font_color "${img_list[${i}]}已存在,不需下载。"
+		fi
+		i=`expr $i + 1`
+	done
+	
+	for k in ${img_tag_list[@]}
+	do
+		img_tg=`docker images | grep $k | grep -v grep`
+		if [ -z "$img_tg" ];then
+			if [ "$k" == ${img_tag_list[6]} ];then
+				font_color "开始给${k}镜像打标签"
+				docker tag ${img_list[$j]}${img_edi[$j]} ${img_tag_list[$j]}:${img_edi[$j]}
+				font_color "${k} 镜像标签修改完成"
+				sleep 1
+				font_color "开始删除${img_list[$j]}镜像"
+				docker rmi ${img_list[$j]}${img_edi[$j]}
+			else
+				font_color "开始给${k}镜像打标签"
+				docker tag ${img_list[$j]}:${img_edi[$j]} ${img_tag_list[$j]}:${img_edi[$j]}
+				font_color "${k} 镜像标签修改完成"
+				sleep 1
+				font_color "开始删除${img_list[$j]}镜像"
+				docker rmi ${img_list[$j]}:${img_edi[$j]}
+			fi
+		else
+			font_color "${k}镜像标签已经修改"
+		fi
+		j=`expr $j + 1`
+	done
+	
+}
+
+# node pull img
+function pull_img_node(){
+        systemctl start docker
+        docke_status=`systemctl list-unit-files | grep docker.service | grep -v grep | awk {'print $2'}`
+        if [ "$docke_status" == "disabled" ];then
+                systemctl enable docker
+        fi
+        i=0
+        j=0
+        img_list=("mirrorgooglecontainers/kube-proxy-amd64" "mirrorgooglecontainers/pause-amd64" "carlziess/coredns-")
+        img_edi=("v1.13.2" "3.1" "1.2.6")
+        img_tag_list=("k8s.gcr.io/kube-proxy" "k8s.gcr.io/pause" "k8s.gcr.io/coredns")
+        for x in ${img_tag_list[@]}
+        do
+                img_g=`docker images | grep $x | grep -v grep`
+                if [ -z "$img_g" ];then
+                        if [ "$x" == ${img_tag_list[2]} ];then
+                                font_color "开始pull ${img_list[${i}]}"
+                                docker pull ${img_list[${i}]}${img_edi[${i}]}
+                        else
+                                font_color "开始pull ${img_list[${i}]}"
+                                docker pull ${img_list[${i}]}:${img_edi[${i}]}
+                        fi
+                else
+                        font_color "${img_list[${i}]}已存在,不需下载。"
+                fi
+                i=`expr $i + 1`
+        done
+
+        for k in ${img_tag_list[@]}
+        do
+                img_tg=`docker images | grep $k | grep -v grep`
+                if [ -z "$img_tg" ];then
+                        if [ "$k" == ${img_tag_list[2]} ];then
+                                font_color "开始给${k}镜像打标签"
+                                docker tag ${img_list[$j]}${img_edi[$j]} ${img_tag_list[$j]}:${img_edi[$j]}
+				font_color "${k} 镜像标签修改完成"
+				sleep 1
+				font_color "开始删除${img_list[$j]}镜像"
+				docker rmi ${img_list[$j]}${img_edi[$j]}
+                        else
+                                font_color "开始给${k}镜像打标签"
+                                docker tag ${img_list[$j]}:${img_edi[$j]} ${img_tag_list[$j]}:${img_edi[$j]}
+				font_color "${k} 镜像标签修改完成"
+				sleep 1
+				font_color "开始删除${img_list[$j]}镜像"
+				docker rmi ${img_list[$j]}:${img_edi[$j]}
+                        fi
+                else
+                        font_color "${k}镜像标签已经修改"
+                fi
+                j=`expr $j + 1`
+        done
+}
+# 拉取镜像
+#function pull_master_img(){
+#	systemctl restart docker
+#	systemctl enable docker
+#	#docker rmi `docker images | awk {'print $3'}`
+#	#docker rmi `docker images -q`
+#	sleep 1
+#	font_color "开始拉取镜像"
+#        docker pull mirrorgooglecontainers/kube-apiserver-amd64:v1.13.2
+#        docker pull mirrorgooglecontainers/kube-controller-manager-amd64:v1.13.2
+#        docker pull mirrorgooglecontainers/kube-scheduler-amd64:v1.13.2
+#        docker pull mirrorgooglecontainers/kube-proxy-amd64:v1.13.2
+#        docker pull mirrorgooglecontainers/pause-amd64:3.1
+#        docker pull mirrorgooglecontainers/etcd-amd64:3.2.24
+#        docker pull carlziess/coredns-1.2.6
+#        font_color "开始给镜像打标签"
+#        docker tag mirrorgooglecontainers/kube-apiserver-amd64:v1.13.2 k8s.gcr.io/kube-apiserver:v1.13.2
+#        docker tag mirrorgooglecontainers/kube-controller-manager-amd64:v1.13.2 k8s.gcr.io/kube-controller-manager:v1.13.2
+#        docker tag mirrorgooglecontainers/kube-scheduler-amd64:v1.13.2 k8s.gcr.io/kube-scheduler:v1.13.2
+#        docker tag mirrorgooglecontainers/kube-proxy-amd64:v1.13.2 k8s.gcr.io/kube-proxy:v1.13.2
+#        docker tag mirrorgooglecontainers/pause-amd64:3.1 k8s.gcr.io/pause:3.1
+#        docker tag mirrorgooglecontainers/etcd-amd64:3.2.24 k8s.gcr.io/etcd:3.2.24
+#        docker tag carlziess/coredns-1.2.6 k8s.gcr.io/coredns:1.2.6
+#}
+
+#function pull_node_img(){
+#	systemctl restart docker
+#	systemctl enable docker
+#	#docker rmi `docker images | awk {'print $3'}`
+#	#docker rmi `docker images -q`
+#	sleep 1
+#        font_color "开始拉取镜像"
+#        docker pull mirrorgooglecontainers/kube-proxy-amd64:v1.13.2
+#        docker pull mirrorgooglecontainers/pause-amd64:3.1
+#        docker pull carlziess/coredns-1.2.6
+#        font_color "开始给镜像打标签"
+#        docker tag mirrorgooglecontainers/kube-proxy-amd64:v1.13.2 k8s.gcr.io/kube-proxy:v1.13.2
+#        docker tag mirrorgooglecontainers/pause-amd64:3.1 k8s.gcr.io/pause:3.1
+#        docker tag carlziess/coredns-1.2.6 k8s.gcr.io/coredns:1.2.6
+#}
+
+function pull_master(){
+	# docker=`ps axu | grep docker | grep -v grep`
+	docker=`systemctl status docker | grep running | grep -v grep`
+	if [ -n "$docker" ];then
+		pull_img_master
+	else
+		systemctl start docker
+		pull_img_master
+	fi
+}
+
+function pull_node(){
+        # docker=`ps axu | grep docker | grep -v grep`
+	docker=`systemctl status docker | grep running | grep -v grep`
+        if [ -n "$docker" ];then
+                pull_img_node
+        else
+                systemctl start docker
+                pull_img_node
+        fi
+}
+
+# 初始化集群
+function init_k8s(){
+	iptables -P FORWARD ACCEPT 
+	kubectl get nodes
+	font_color "主节点已经安装"
+	font_color "开始初始化集群"
+	kubeadm init --kubernetes-version=v1.13.2 --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=$1 > .kubernetes1.txt
+	cat .kubernetes1.txt
+	kubernetes_info=`cat .kubernetes1.txt | grep "token-ca-cert-hash" | grep -v grep`
+	if [ -n "$kubernetes_info" ];then
+		font_color "kubernetes集群搭建成功，开始配置home"
+		mkdir -p $HOME/.kube
+		sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+		sudo chown $(id -u):$(id -g) $HOME/.kube/config
+		export KUBECONFIG=/etc/kubernetes/admin.conf
+		font_color "home配置完成"
+		echo "#!/bin/bash" > .kubernetes.txt
+		echo "iptables -P FORWARD ACCEPT" >> .kubernetes.txt
+		cat .kubernetes1.txt | grep token-ca-cert-hash | grep -v grep >> .kubernetes.txt
+		rm -rf .kubernetes1.txt
+	else
+		font_color "kubernetes集群搭建----------失败,开始清理环境"
+		kubeadm reset
+		font_color "环境清理完毕"
+		exit 1
+	fi
+}
+
+# 安装flnneld网络
+function install_flannel(){
+	font_color "开始安装flannel网络"
+	kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/bc79dd1505b0c8681ece4de4c0d86c5cd2643275/Documentation/kube-flannel.yml
+	font_color "flannel网络安装完成,可以去node节点执行此脚本"
+}
+
+
+# 创建dashaboard.ymal文件,仅供内部调用
+function touch_dashaboard(){
+cat << EOF >> ./kubernetes-dashboard.yaml
+# Copyright 2017 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Configuration to deploy release version of the Dashboard UI compatible with
+# Kubernetes 1.8.
+#
+# Example usage: kubectl create -f <this_file>
+
+# ------------------- Dashboard Secret ------------------- #
+
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    k8s-app: kubernetes-dashboard
+  name: kubernetes-dashboard-certs
+  namespace: kube-system
+type: Opaque
+
+---
+# ------------------- Dashboard Service Account ------------------- #
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    k8s-app: kubernetes-dashboard
+  name: kubernetes-dashboard
+  namespace: kube-system
+
+---
+# ------------------- Dashboard Role & Role Binding ------------------- #
+
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kubernetes-dashboard-minimal
+  namespace: kube-system
+rules:
+  # Allow Dashboard to create 'kubernetes-dashboard-key-holder' secret.
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create"]
+  # Allow Dashboard to create 'kubernetes-dashboard-settings' config map.
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create"]
+  # Allow Dashboard to get, update and delete Dashboard exclusive secrets.
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["kubernetes-dashboard-key-holder", "kubernetes-dashboard-certs"]
+  verbs: ["get", "update", "delete"]
+  # Allow Dashboard to get and update 'kubernetes-dashboard-settings' config map.
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["kubernetes-dashboard-settings"]
+  verbs: ["get", "update"]
+  # Allow Dashboard to get metrics from heapster.
+- apiGroups: [""]
+  resources: ["services"]
+  resourceNames: ["heapster"]
+  verbs: ["proxy"]
+- apiGroups: [""]
+  resources: ["services/proxy"]
+  resourceNames: ["heapster", "http:heapster:", "https:heapster:"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubernetes-dashboard-minimal
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubernetes-dashboard-minimal
+subjects:
+- kind: ServiceAccount
+  name: kubernetes-dashboard
+  namespace: kube-system
+
+---
+# ------------------- Dashboard Deployment ------------------- #
+
+kind: Deployment
+apiVersion: apps/v1beta2
+metadata:
+  labels:
+    k8s-app: kubernetes-dashboard
+  name: kubernetes-dashboard
+  namespace: kube-system
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      k8s-app: kubernetes-dashboard
+  template:
+    metadata:
+      labels:
+        k8s-app: kubernetes-dashboard
+    spec:
+      containers:
+      - name: kubernetes-dashboard
+        #image: k8s.gcr.io/kubernetes-dashboard-amd64:v1.8.2
+        image: registry.cn-hangzhou.aliyuncs.com/google_containers/kubernetes-dashboard-amd64:v1.10.1
+        ports:
+        - containerPort: 8443
+          protocol: TCP
+        args:
+          - --auto-generate-certificates
+          # Uncomment the following line to manually specify Kubernetes API server Host
+          # If not specified, Dashboard will attempt to auto discover the API server and connect
+          # to it. Uncomment only if the default does not work.
+          # - --apiserver-host=http://my-address:port
+        volumeMounts:
+        - name: kubernetes-dashboard-certs
+          mountPath: /certs
+          # Create on-disk volume to store exec logs
+        - mountPath: /tmp
+          name: tmp-volume
+        livenessProbe:
+          httpGet:
+            scheme: HTTPS
+            path: /
+            port: 8443
+          initialDelaySeconds: 30
+          timeoutSeconds: 30
+      volumes:
+      - name: kubernetes-dashboard-certs
+        secret:
+          secretName: kubernetes-dashboard-certs
+      - name: tmp-volume
+        emptyDir: {}
+      serviceAccountName: kubernetes-dashboard
+      # Comment the following tolerations if Dashboard must not be deployed on master
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+
+---
+# ------------------- Dashboard Service ------------------- #
+
+kind: Service
+apiVersion: v1
+metadata:
+  labels:
+    k8s-app: kubernetes-dashboard
+  name: kubernetes-dashboard
+  namespace: kube-system
+spec:
+  ports:
+    - port: 443
+      targetPort: 8443
+  type: NodePort
+  selector:
+    k8s-app: kubernetes-dashboard
+
+
+---
+
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kubernetes-dashboard
+subjects:
+  - kind: ServiceAccount
+    name: kubernetes-dashboard
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+EOF
+}
+
+# 获取访问端口以及token
+function get_port_token(){
+	get_port=`kubectl get svc -n kube-system | grep dashboard | grep -v grep | awk {'print $5'} | awk -F : {'print $2'} | awk -F / {'print $1'}`
+	get_dash_name=`kubectl -n kube-system get secret | grep kubernetes-dashboard-token | grep -v grep | awk {'print $1'}`
+	get_token=`kubectl -n kube-system describe secret ${get_dash_name} | awk {'print $2'} |awk 'END {print}'`
+	
+	if [ -n "$get_port" ];then
+		font_color "dashboard的端口是:${get_port}"
+	fi
+	
+	if [ -n "$get_dash_name" ];then
+		font_color "token是:$get_token"
+	fi
+}
+
+
+# 安装dashboard WEB界面
+function install_dashboard(){
+	dash=`find ./ -name "kubernetes-dashboard.yaml"`
+	if [ -n "$dash" ];then
+		get_dash=`kubectl get pods -o wide -n kube-system | grep dashboard | grep -v grep`
+		if [ -z "$get_dash" ];then
+			kubectl create -f kubernetes-dashboard.yaml
+			if [ $? ==0 ];then
+				font_color "dashboard安装完成"
+				sleep 10
+				get_port_token
+			else
+				font_color "dashboard安装失败"
+			fi
+		else
+			font_color "dashboard容器已经存在，无须再次运行"	
+		fi
+	else
+		font_color "开始创建kubernetes-dashboard.yaml文件"
+		touch_dashaboard	
+		kubectl create -f kubernetes-dashboard.yaml
+	        if [ $? == 0 ];then
+		        font_color "dashboard安装完成"
+			sleep 10
+			get_port_token
+        	else
+                        font_color "dashboard安装失败"
+	        fi
+	fi
+}
+
+# 添加node节点
+function add_node(){
+	font_color "开始添加node节点"
+	scp root@$1:${2}/.kubernetes.txt ./
+	sh .kubernetes.txt
+	if [ $? == 0 ];then
+		font_color "node节点添加成功"
+	else
+		font_color "node节点添加----------失败,请检查主节点防火墙等"
+	fi
+}
+
+# 配置免密码登录
+function ssh_key(){
+	ssh-keygen -t rsa
+	ssh-copy-id -i ~/.ssh/id_rsa.pub root@$1
+}
+
+function helps(){
+	echo "<k8s master IP>命令是在master端执行"
+	echo "<k8s node masterIP master节点k8s脚本目录>命令是在node端执行"
+	echo "<k8s ug>命令是更新内核"
+	echo "<k8s sk masterIP>命令是配置免密码登录"
+	echo "<k8s dash>命令是安装k8sWEB管理界面"
+	echo "<k8s help>命令是帮助"
+}
+
+if [ $# == 1 ];then
+	if [ "$1" == "ug" ];then
+		update_grub
+	elif [ "$1" == "dash" ];then
+		install_dashboard
+	elif [ "$1" == "help" ];then
+		helps
+	fi
+elif [ $# == 2 ];then
+	if [ "$1" == "master" ];then
+		stop_firewalld_selinux
+		swap_off
+		update_parameter
+		#update_grub
+		#update_yum
+		install_docker
+		install_kubernetes
+		pull_master
+		kubectl get nodes
+		if [ $? == 0 ];then
+			font_color "主节点已经安装"
+			exit 1
+		else
+			init_k8s $2
+			install_flannel
+			#install_dashboard
+		fi
+	elif [ "$1" == "sk" ];then
+		ssh_key $2
+	fi
+elif [ $# == 3 ];then
+	if [ "$1" == "node" ];then
+                stop_firewalld_selinux
+                swap_off
+                update_parameter
+                #update_grub
+		#update_yum
+                install_docker
+                install_kubernetes
+                pull_node
+                add_node $2 $3
+	fi
+else
+	echo "error"
+fi
+
